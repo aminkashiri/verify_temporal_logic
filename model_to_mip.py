@@ -1,13 +1,12 @@
 import torch
-import numpy as np
 import gurobipy as gp
-from gurobipy import GRB, Model
-from julia import OVERT, Main
+from julia import Main
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-import nfl_veripy.dynamics as dynamics
+
+# import nfl_veripy.dynamics as dynamics
 from nfl_veripy.utils.nn import load_controller
 from nfl_veripy.dynamics.Pendulum import PendulumDynamics
 
@@ -28,7 +27,33 @@ def plot_bound(bound):
     plt.gca().add_patch(rect)
 
 
-def plot_samples_and_bounds(bounds, controller, dyn, show_steps=False) -> None:
+def plot_actual_samples(bounds, controller, dyn, steps, show_steps=False) -> None:
+    plt.axes().set_aspect("equal")
+    xt = torch.distributions.Uniform(bounds[0][:, 0], bounds[0][:, 1]).sample((1000,))
+    for step in range(steps):
+        ut = controller(xt)
+        xt1 = dyn(xt, ut)
+        if step == 0:
+            xt_np = xt.detach().cpu().numpy()
+            plt.plot(xt_np[:, 0], xt_np[:, 1], "o", c="blue")
+
+        xt1_np = xt1.detach().cpu().numpy()
+        if step < steps - 1 and show_steps:
+            plt.plot(xt1_np[:, 0], xt1_np[:, 1], "o", c="black")
+        elif step == steps - 1:
+            plt.plot(xt1_np[:, 0], xt1_np[:, 1], "o", c="black")
+
+        xt = xt1
+
+    # for i, bound in enumerate(bounds):
+    #     if i == 0 or i == len(bounds) - 1 or show_steps:
+    #         plot_bound(bound)
+    plt.show()
+
+
+def plot_recursive_samples_and_bounds(
+    bounds, controller, dyn, show_steps=False
+) -> None:
     plt.axes().set_aspect("equal")
     for i, bound in enumerate(bounds):
         xt = torch.distributions.Uniform(bound[:, 0], bound[:, 1]).sample((1000,))
@@ -52,10 +77,10 @@ def plot_samples_and_bounds(bounds, controller, dyn, show_steps=False) -> None:
 
 def find_BB(opt, var_name):
     # TODO: Can I use Lirpa dict?
-    opt.setObjective(opt.getVarByName(var_name), GRB.MINIMIZE)
+    opt.setObjective(opt.getVarByName(var_name), gp.GRB.MINIMIZE)
     opt.optimize()
     lb = opt.ObjVal
-    opt.setObjective(opt.getVarByName(var_name), GRB.MAXIMIZE)
+    opt.setObjective(opt.getVarByName(var_name), gp.GRB.MAXIMIZE)
     opt.optimize()
     ub = opt.ObjVal
     return lb, ub
@@ -115,8 +140,6 @@ def add_one_step_constraints(controller, dyn, init_state_range, step, show=False
     step_opt = create_gurobi_model(Main.constraints, step_opt)
     step_opt.update()
 
-    step_opt.write(f"step_{step}_model.lp")
-
     x1d_var = step_opt.getVarByName(f"x2_{step}")
     x2d_var = step_opt.getVarByName(Main.output_var_name)
     x2d_var.VarName = f"x2d_{step}"
@@ -128,6 +151,8 @@ def add_one_step_constraints(controller, dyn, init_state_range, step, show=False
     step_opt.addConstr(x1_2_var == x1_var + DT * x1d_var)
     step_opt.addConstr(x2_2_var == x2_var + DT * x2d_var)
 
+    step_opt.write(f"step_{step}_opt.lp")
+
     x1_2_lb, x1_2_ub = find_BB(step_opt, f"x1_{step+1}")
     x2_2_lb, x2_2_ub = find_BB(step_opt, f"x2_{step+1}")
 
@@ -138,7 +163,7 @@ def add_one_step_constraints(controller, dyn, init_state_range, step, show=False
     )
 
     if show:
-        plot_samples_and_bounds(
+        plot_recursive_samples_and_bounds(
             [init_state_range, next_state_range], controller, dyn
         )
     return step_opt, next_state_range
@@ -146,37 +171,46 @@ def add_one_step_constraints(controller, dyn, init_state_range, step, show=False
 
 if __name__ == "__main__":
     # controller = load_controller("GroundRobotSI", model_name="complex_potential_field")
-    controller = load_controller("Pendulum")
+    with gp.Env(empty=True) as env:
+        # Disable logging
+        env.setParam("OutputFlag", 0)
+        env.start()
 
-    DEVICE = torch.device("cuda:0")
-    DT = 0.1
-    EPS = 0.1
-    STEPS = 3
+        DEVICE = torch.device("cuda:0")
+        DT = 0.1
+        EPS = 0.1
+        STEPS = 4
 
-    # dyn = dynamics.get_dynamics_instance("Pendulum", "FullState")
-    dyn = PendulumDynamics().to(DEVICE)
-    init_state = torch.tensor([[1, 0.01]]).to(DEVICE)
-    init_state_range = torch.tensor(
-        [
-            [init_state[0][0] - EPS, init_state[0][0] + EPS],
-            [init_state[0][1] - EPS, init_state[0][1] + EPS],
-        ]
-    ).to(DEVICE)
+        controller = load_controller("Pendulum").to(DEVICE)
+        dyn = PendulumDynamics().to(DEVICE)
+        # dyn = dynamics.get_dynamics_instance("Pendulum", "FullState")
+        init_state = torch.tensor([[1, 0.01]]).to(DEVICE)
+        init_state_range = torch.tensor(
+            [
+                [init_state[0][0] - EPS, init_state[0][0] + EPS],
+                [init_state[0][1] - EPS, init_state[0][1] + EPS],
+            ]
+        ).to(DEVICE)
 
-    state_bounds = [init_state_range]
-    main_opt = Model("merged_model")
-    for step in range(STEPS):
-        step_opt, next_state_range = add_one_step_constraints(
-            controller,
-            dyn,
-            state_bounds[-1],
-            step + 1,
-            True,
-            # True if step + 1 == STEPS else False,
-            # False,
-        )
-        copy_constraints(main_opt, step_opt)
-        state_bounds.append(next_state_range)
+        state_bounds = [init_state_range]
+        main_opt = gp.Model("merged_model")
+        for step in range(STEPS):
+            step_opt, next_state_range = add_one_step_constraints(
+                controller,
+                dyn,
+                state_bounds[-1],
+                step + 1,
+                # True if step + 1 == STEPS else False,
+                False,
+            )
+            copy_constraints(main_opt, step_opt, postfix=f"_{step+1}")
+            state_bounds.append(next_state_range)
 
-    plot_samples_and_bounds(state_bounds, controller, dyn)
-
+        # plot_actual_samples(state_bounds, controller, dyn, STEPS)
+        # plot_recursive_samples_and_bounds(state_bounds, controller, dyn)
+        main_opt.write("main_opt.lp")
+        x1_t_lb, x1_t_ub = find_BB(main_opt, f"x1_{STEPS+1}")
+        x2_t_lb, x2_t_ub = find_BB(main_opt, f"x2_{STEPS+1}")
+        print("-------------------------------------------------------------------")
+        print("Recursive result", state_bounds[-1])
+        print("One shot results:\n ", x1_t_lb, x1_t_ub, "\n", x2_t_lb, x2_t_ub)

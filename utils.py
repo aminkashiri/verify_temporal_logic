@@ -2,7 +2,7 @@ import gurobipy as gp
 from gurobipy import GRB, Model
 
 
-def copy_constraints(model1, model2):
+def copy_constraints(model1, model2, postfix):
     """
     Copy variables from model2 to model1
     """
@@ -15,7 +15,8 @@ def copy_constraints(model1, model2):
             "obj": 0,
             "vtype": var.VType,
         }
-        new_var = get_or_create_var(model1, var.VarName, keywords)
+        name = var.varName if var.VarName.startswith("x") else var.VarName + postfix
+        new_var = get_or_create_var(model1, name, keywords)
         var_mapping[var] = new_var
 
     # Add simple constraints
@@ -25,7 +26,7 @@ def copy_constraints(model1, model2):
             var_mapping[expr.getVar(i)] * expr.getCoeff(i) for i in range(expr.size())
         )
         model1.addConstr(
-            new_expr, sense=constr.Sense, rhs=constr.RHS, name=f"{constr.ConstrName}"
+            new_expr, sense=constr.Sense, rhs=constr.RHS, name=f"{constr.ConstrName}{postfix}"
         )
 
     # Add general constraints (min and max)
@@ -35,13 +36,13 @@ def copy_constraints(model1, model2):
             args = list(map(lambda x: var_mapping[x], constr[1]))
             if len(args) == 1:
                 args.append(constr[2])
-            model1.addConstr(var_mapping[constr[0]] == gp.max_(*args), i.GenConstrName)
+            model1.addConstr(var_mapping[constr[0]] == gp.max_(*args), i.GenConstrName + postfix)
         else:
             constr = model2.getGenConstrMin(i)
             args = list(map(lambda x: var_mapping[x], constr[1]))
             if len(args) == 1:
                 args.append(constr[2])
-            model1.addConstr(var_mapping[constr[0]] == gp.min_(*args), i.GenConstrName)
+            model1.addConstr(var_mapping[constr[0]] == gp.min_(*args), i.GenConstrName + postfix)
 
     return model1
 
