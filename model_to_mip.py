@@ -12,45 +12,42 @@ from nfl_veripy.utils.nn import load_controller
 from nfl_veripy.dynamics.Pendulum import PendulumDynamics
 
 from AST_to_Gurobi import create_gurobi_model
+from utils import copy_constraints, get_or_create_var
 
 
-def plot_1step_samples_and_bounds(
-    bounded_init_state, controller, dyn, bound=None
-) -> None:
-    xt = np.random.uniform(
-        low=(bounded_init_state + bounded_init_state.ptb.eps).cpu(),
-        high=(bounded_init_state - bounded_init_state.ptb.eps).cpu(),
-        size=(1000, 2),
+def plot_bound(bound):
+    lb_ub = bound.cpu().numpy()
+    rect = Rectangle(
+        lb_ub[:, 0],
+        lb_ub[0, 1] - lb_ub[0, 0],
+        lb_ub[1, 1] - lb_ub[1, 0],
+        fc="None",
+        linewidth=2,
+        edgecolor="red",
     )
-    xt = torch.tensor(xt, dtype=torch.float).to(DEVICE)
-    ut = controller(xt)
-    xt1 = dyn(xt, ut)
-    xt = xt.detach().cpu().numpy()
-    xt1 = xt1.detach().cpu().numpy()
+    plt.gca().add_patch(rect)
+
+
+def plot_samples_and_bounds(bounds, controller, dyn, show_steps=False) -> None:
     plt.axes().set_aspect("equal")
-    plt.plot(xt[:, 0], xt[:, 1], "o", c="blue")
-    plt.plot(xt1[:, 0], xt1[:, 1], "o", c="red")
+    for i, bound in enumerate(bounds):
+        xt = torch.distributions.Uniform(bound[:, 0], bound[:, 1]).sample((1000,))
+        ut = controller(xt)
+        xt1 = dyn(xt, ut)
+        xt = xt.detach().cpu().numpy()
+        xt1 = xt1.detach().cpu().numpy()
+        if i == 0:
+            plt.plot(xt[:, 0], xt[:, 1], "o", c="blue")
 
-    if bound is not None:
-        lb_ub = bound.cpu().numpy()
-        rect = Rectangle(
-            lb_ub[:, 0],
-            lb_ub[0, 1] - lb_ub[0, 0],
-            lb_ub[1, 1] - lb_ub[1, 0],
-            fc="None",
-            linewidth=2,
-            edgecolor="red",
-        )
-        plt.gca().add_patch(rect)
+        if i < len(bounds) - 2:
+            if show_steps:
+                plt.plot(xt1[:, 0], xt1[:, 1], "o", c="red")
+        elif i == len(bounds) - 2:
+            plt.plot(xt1[:, 0], xt1[:, 1], "o", c="red")
+
+        if i == 0 or i == len(bounds) - 1 or show_steps:
+            plot_bound(bound)
     plt.show()
-
-
-def get_or_create_var(opt_model, name):
-    opt_model.update()
-    var = opt_model.getVarByName(name)
-    if var is None:
-        var = opt_model.addVar(name=name, lb=-GRB.INFINITY, ub=GRB.INFINITY)
-    return var
 
 
 def find_BB(opt, var_name):
@@ -61,11 +58,10 @@ def find_BB(opt, var_name):
     opt.setObjective(opt.getVarByName(var_name), GRB.MAXIMIZE)
     opt.optimize()
     ub = opt.ObjVal
-    print(lb, ub)
     return lb, ub
 
 
-def add_one_step_constraints(controller, dyn, init_state_range, step):
+def add_one_step_constraints(controller, dyn, init_state_range, step, show=False):
     init_state = (init_state_range[:, 1] + init_state_range[:, 0]).unsqueeze(0) / 2.0
     eps = (init_state_range[:, 1] - init_state_range[:, 0]) / 2.0
     ptb = PerturbationLpNorm(norm=float("inf"), eps=eps)
@@ -79,10 +75,6 @@ def add_one_step_constraints(controller, dyn, init_state_range, step):
 
     lirpa_model.build_solver_module(model_type="mip")
     step_opt = lirpa_model.solver_model
-
-    plot_1step_samples_and_bounds(
-        bounded_init_state, controller, dyn, bound=init_state_range
-    )
 
     u1_var = step_opt.getVarByName("lay/11_0")
     u1_var.VarName = f"u1_{step}"
@@ -120,17 +112,6 @@ def add_one_step_constraints(controller, dyn, init_state_range, step):
     """
     )
 
-    # overapprox = Main.result
-    # print(overapprox)
-    # print("---------------")
-    # for i in range(len(overapprox.approx_eq)):
-    #     print("--------------- eq ", i)
-    #     print(overapprox.approx_eq[i])
-    # for i in range(len(overapprox.approx_ineq)):
-    #     print("--------------- ineq ", i)
-    #     print(overapprox.approx_ineq[i])
-    # print("---------------")
-
     step_opt = create_gurobi_model(Main.constraints, step_opt)
     step_opt.update()
 
@@ -150,26 +131,27 @@ def add_one_step_constraints(controller, dyn, init_state_range, step):
     x1_2_lb, x1_2_ub = find_BB(step_opt, f"x1_{step+1}")
     x2_2_lb, x2_2_ub = find_BB(step_opt, f"x2_{step+1}")
 
-    print(x1_2_lb, x1_2_ub)
-    print(x2_2_lb, x2_2_ub)
+    # print(x1_2_lb, x1_2_ub)
+    # print(x2_2_lb, x2_2_ub)
     next_state_range = torch.tensor(
         [[x1_2_lb, x1_2_ub], [x2_2_lb, x2_2_ub]], device=DEVICE
     )
 
-    plot_1step_samples_and_bounds(
-        bounded_init_state, controller, dyn, bound=next_state_range
-    )
-    return next_state_range
+    if show:
+        plot_samples_and_bounds(
+            [init_state_range, next_state_range], controller, dyn
+        )
+    return step_opt, next_state_range
 
 
 if __name__ == "__main__":
     # controller = load_controller("GroundRobotSI", model_name="complex_potential_field")
     controller = load_controller("Pendulum")
-    print(controller)
 
     DEVICE = torch.device("cuda:0")
     DT = 0.1
     EPS = 0.1
+    STEPS = 3
 
     # dyn = dynamics.get_dynamics_instance("Pendulum", "FullState")
     dyn = PendulumDynamics().to(DEVICE)
@@ -181,5 +163,20 @@ if __name__ == "__main__":
         ]
     ).to(DEVICE)
 
-    next_state_range = add_one_step_constraints(controller, dyn, init_state_range, 1)
-    next_state_range = add_one_step_constraints(controller, dyn, next_state_range, 2)
+    state_bounds = [init_state_range]
+    main_opt = Model("merged_model")
+    for step in range(STEPS):
+        step_opt, next_state_range = add_one_step_constraints(
+            controller,
+            dyn,
+            state_bounds[-1],
+            step + 1,
+            True,
+            # True if step + 1 == STEPS else False,
+            # False,
+        )
+        copy_constraints(main_opt, step_opt)
+        state_bounds.append(next_state_range)
+
+    plot_samples_and_bounds(state_bounds, controller, dyn)
+
