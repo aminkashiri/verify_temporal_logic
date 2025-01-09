@@ -1,7 +1,12 @@
 .venv/
+__pycache__/
+
+# Julia env
+.jenv/ 
 
 auto_LiRPA/
-OVERT.jl/
-OVERTVerify.jl/
+OVERT/
+OVERTVerify/
+training_RL
 
 *.lp
