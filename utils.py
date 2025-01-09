@@ -9,9 +9,13 @@ def copy_constraints(model1, model2):
     # Add variables
     var_mapping = {}
     for var in model2.getVars():
-        new_var = model1.addVar(
-            lb=var.LB, ub=var.UB, obj=0, vtype=var.VType, name=f"{var.VarName}"
-        )
+        keywords = {
+            "lb": var.LB,
+            "ub": var.UB,
+            "obj": 0,
+            "vtype": var.VType,
+        }
+        new_var = get_or_create_var(model1, var.VarName, keywords)
         var_mapping[var] = new_var
 
     # Add simple constraints
@@ -41,7 +45,25 @@ def copy_constraints(model1, model2):
 
     return model1
 
+
+def get_or_create_var(opt_model, name, keywords=None):
+    opt_model.update()
+    try:
+        var = opt_model.getVarByName(name)
+    except:
+        #! WARNING: Watch out
+        var = None
+        pass
+    if var is None:
+        if keywords is None:
+            var = opt_model.addVar(name=name, lb=-GRB.INFINITY, ub=GRB.INFINITY)
+        else:
+            var = opt_model.addVar(name=name, **keywords)
+    return var
+
+
 if __name__ == "__main__":
     model2 = gp.read("model.lp")
     model1 = Model("merged_model")
     copy_constraints(model1, model2)
+    model1.write("merged_model.lp")
