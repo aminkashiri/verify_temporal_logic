@@ -1,0 +1,7 @@
+.venv/
+
+auto_LiRPA/
+OVERT.jl/
+OVERTVerify.jl/
+
+*.lp
