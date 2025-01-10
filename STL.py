@@ -58,10 +58,15 @@ class Operator:
             info["const_count"] += 1
             return nz
         elif self.name == "&":
-            zs = [self.args[0], self.args[1]]
+            arg1 = self.args[0].create_aux(opt, start_step, info, used_predicates)
+            arg2 = self.args[1].create_aux(opt, start_step, info, used_predicates)
+            zs = [arg1, arg2]
+            print(zs)
             return self.conjunct_zs(zs, info)
         elif self.name == "|":
-            zs = [self.args[0], self.args[1]]
+            arg1 = self.args[0].create_aux(opt, start_step, info, used_predicates)
+            arg2 = self.args[1].create_aux(opt, start_step, info, used_predicates)
+            zs = [arg1, arg2]
             return self.disjunct_zs(zs, info)
         elif self.name == "predicate":
 
@@ -71,9 +76,9 @@ class Operator:
 
             #! Warn: get or create is only for test.
             from utils import get_or_create_var
-            var = get_or_create_var(self.opt, self.args[0] + f"_{start_step}")
+            # var = get_or_create_var(self.opt, self.args[0] + f"_{start_step}")
 
-            # var = self.opt.getVarByName(self.args[0] + f"_{start_step}")
+            var = self.opt.getVarByName(self.args[0] + f"_{start_step}")
 
             # mu positive == satsify
             if self.args[1] == ">":
@@ -84,10 +89,10 @@ class Operator:
             z = self.opt.addVar(vtype=gp.GRB.BINARY, name=aux_name(info["aux_count"]))
             info["aux_count"] += 1
 
-            self.opt.addConstr(mu <= M * z - et, const_name(info["const_count"]))
+            self.opt.addConstr(mu <= info["M"] * z - info["et"], const_name(info["const_count"]))
             info["const_count"] += 1
             self.opt.addConstr(
-                -1 * (mu) <= M * (1 - z) - et, const_name(info["const_count"])
+                -1 * (mu) <= info["M"] * (1 - z) - info["et"], const_name(info["const_count"])
             )
             info["const_count"] += 1
 
@@ -130,6 +135,7 @@ class Operator:
 class STLParser:
     def __init__(self, spec: str) -> None:
         spec = spec.replace(" ", "")
+        spec = spec.replace("\n", "")
         self.spec = self.parse(spec)
 
     def find_ending_paranthesis_index(self, s: str):
@@ -187,8 +193,8 @@ class STLParser:
         elif spec.startswith("N("):
             end_paranthesis_index = self.find_ending_paranthesis_index(spec)
             inside_operator = self.parse(spec[2:end_paranthesis_index])
-            if inside_operator.name != "predicate":
-                raise Exception("Error: Negation only before a predicate")
+            # if inside_operator.name != "predicate":
+            #     raise Exception("Error: Negation only before a predicate")
             operator = Operator("N", [inside_operator])
             rest_of_spec = spec[end_paranthesis_index + 1 :]
         elif spec.startswith("("):
@@ -269,7 +275,8 @@ if __name__ == "__main__":
     # The formula for the signal
     # signal = lambda t: np.sin(t) + 0.5 * np.cos(2 * t)
 
-    spec = "F[1,2](G[0,1](x1 > 3))"
+    # spec = "F[1,2](G[0,1](x1 > 3))"
+    spec = "G[0,1](x1 < 1.2) & G[0,1](x2 > -0.6)"
     # spec = "G[0,10](x > 1.2)"
     # spec = "F[0,3](x < -1)"  # TODO: Start from 3
     # spec = "G[0,5.5](F[0,4](x < 0.4))"
